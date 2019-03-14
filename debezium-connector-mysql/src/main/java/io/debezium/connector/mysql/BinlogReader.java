@@ -782,7 +782,19 @@ public class BinlogReader extends AbstractReader {
         }
         startingRowNumber = 0;
     }
-
+    private Serializable[] adjustBefore(Serializable[] before,Serializable[] after,BitSet includedColumnsBefore){
+        if(before.length != after.length){
+            Serializable[] adjustedBefore = new Serializable[after.length];
+            for (int i = 0,j=0; i < after.length; i++) {
+                if(includedColumnsBefore.get(i)){
+                    adjustedBefore[i] = before[j];
+                    j++;
+                }
+            }
+            return adjustedBefore;
+        }
+        return before;
+    }
     /**
      * Generate source records for the supplied event with an {@link UpdateRowsEventData}.
      *
@@ -802,7 +814,7 @@ public class BinlogReader extends AbstractReader {
         UpdateRowsEventData update = unwrapData(event);
         long tableNumber = update.getTableId();
         BitSet includedColumns = update.getIncludedColumns();
-        // BitSet includedColumnsBefore = update.getIncludedColumnsBeforeUpdate();
+        BitSet includedColumnsBefore = update.getIncludedColumnsBeforeUpdate();
         RecordsForTable recordMaker = recordMakers.forTable(tableNumber, includedColumns, super::enqueueRecord);
         if (recordMaker != null) {
             List<Entry<Serializable[], Serializable[]>> rows = update.getRows();
@@ -814,7 +826,7 @@ public class BinlogReader extends AbstractReader {
                     Map.Entry<Serializable[], Serializable[]> changes = rows.get(row);
                     Serializable[] before = changes.getKey();
                     Serializable[] after = changes.getValue();
-                    count += recordMaker.update(before, after, ts, row, numRows);
+                    count += recordMaker.update(adjustBefore(before,after,includedColumnsBefore), after, ts, row, numRows);
                 }
                 if (logger.isDebugEnabled()) {
                     if (startingRowNumber != 0) {
