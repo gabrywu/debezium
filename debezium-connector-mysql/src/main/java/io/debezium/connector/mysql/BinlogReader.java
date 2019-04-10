@@ -18,6 +18,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 
+import io.debezium.relational.TableSchema;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
 
@@ -48,6 +50,7 @@ import io.debezium.connector.mysql.MySqlConnectorConfig.SecureConnectionMode;
 import io.debezium.connector.mysql.RecordMakers.RecordsForTable;
 import io.debezium.function.BlockingConsumer;
 import io.debezium.heartbeat.Heartbeat;
+import io.debezium.heartbeat.OffsetPosition;
 import io.debezium.relational.TableId;
 import io.debezium.util.Clock;
 import io.debezium.util.ElapsedTimeStrategy;
@@ -234,7 +237,7 @@ public class BinlogReader extends AbstractReader {
         // Set up for JMX ...
         metrics = new BinlogReaderMetrics(client, context.dbSchema());
         heartbeat = Heartbeat.create(context.config(), context.topicSelector().getHeartbeatTopic(),
-                context.getConnectorConfig().getLogicalName());
+                context.getConnectorConfig().getLogicalName(), () -> OffsetPosition.build(source.partition(), source.offset()));
     }
 
     @Override
@@ -435,7 +438,7 @@ public class BinlogReader extends AbstractReader {
             eventHandlers.getOrDefault(eventType, this::ignoreEvent).accept(event);
 
             // Generate heartbeat message if the time is right
-            heartbeat.heartbeat(source.partition(), source.offset(), (BlockingConsumer<SourceRecord>)this::enqueueRecord);
+            heartbeat.heartbeat((BlockingConsumer<SourceRecord>)this::enqueueRecord);
 
             // Capture that we've completed another event ...
             source.completeEvent();
@@ -446,6 +449,7 @@ public class BinlogReader extends AbstractReader {
                 skipEvent = initialEventsToSkip > 0;
             }
         } catch (RuntimeException e) {
+            printTest(e,event);
             // There was an error in the event handler, so propagate the failure to Kafka Connect ...
             logReaderState();
             failed(e, "Error processing binlog event");
@@ -461,7 +465,6 @@ public class BinlogReader extends AbstractReader {
             logger.info("Stopped processing binlog events due to thread interruption");
         }
     }
-
 
     @SuppressWarnings("unchecked")
     protected <T extends EventData> T unwrapData(Event event) {
@@ -687,26 +690,24 @@ public class BinlogReader extends AbstractReader {
 
             if (inconsistentSchemaHandlingMode == EventProcessingFailureHandlingMode.FAIL) {
                 logger.error(
-                        "Encountered change event '{}' at offset {} for table {} whose schema isn't known to this connector. One possible cause is an incomplete database history topic. Take a new snapshot in this case.{}" +
+                        "Encountered change event '{}' at offset {} for table whose schema isn't known to this connector. One possible cause is an incomplete database history topic. Take a new snapshot in this case.{}" +
                         "Use the mysqlbinlog tool to view the problematic event: mysqlbinlog --start-position={} --stop-position={} --verbose {}",
                         event,
                         source.offset(),
-                        tableId,
                         System.lineSeparator(),
                         eventHeader.getPosition(),
                         eventHeader.getNextPosition(),
                         source.binlogFilename()
                 );
-                throw new ConnectException("Encountered change event for table " + tableId + "whose schema isn't known to this connector");
+                throw new ConnectException("Encountered change event for table whose schema isn't known to this connector");
             }
             else if (inconsistentSchemaHandlingMode == EventProcessingFailureHandlingMode.WARN) {
                 logger.warn(
-                        "Encountered change event '{}' at offset {} for table {} whose schema isn't known to this connector. One possible cause is an incomplete database history topic. Take a new snapshot in this case.{}" +
+                        "Encountered change event '{}' at offset {} for table whose schema isn't known to this connector. One possible cause is an incomplete database history topic. Take a new snapshot in this case.{}" +
                         "The event will be ignored.{}" +
                         "Use the mysqlbinlog tool to view the problematic event: mysqlbinlog --start-position={} --stop-position={} --verbose {}",
                         event,
                         source.offset(),
-                        tableId,
                         System.lineSeparator(),
                         System.lineSeparator(),
                         eventHeader.getPosition(),
@@ -716,12 +717,11 @@ public class BinlogReader extends AbstractReader {
             }
             else {
                 logger.debug(
-                        "Encountered change event '{}' at offset {} for table {} whose schema isn't known to this connector. One possible cause is an incomplete database history topic. Take a new snapshot in this case.{}" +
+                        "Encountered change event '{}' at offset {} for table whose schema isn't known to this connector. One possible cause is an incomplete database history topic. Take a new snapshot in this case.{}" +
                         "The event will be ignored.{}" +
                         "Use the mysqlbinlog tool to view the problematic event: mysqlbinlog --start-position={} --stop-position={} --verbose {}",
                         event,
                         source.offset(),
-                        tableId,
                         System.lineSeparator(),
                         System.lineSeparator(),
                         eventHeader.getPosition(),
@@ -781,6 +781,42 @@ public class BinlogReader extends AbstractReader {
             informAboutUnknownTableIfRequired(event, recordMakers.getTableIdFromTableNumber(tableNumber), "insert row");
         }
         startingRowNumber = 0;
+    }
+    private void printTest(RuntimeException e,Event event){
+        e.printStackTrace();
+        logger.error("SystemOut:"+event.toString());
+        UpdateRowsEventData update = unwrapData(event);
+        long tableNumber = update.getTableId();
+        BitSet includedColumns = update.getIncludedColumns();
+        BitSet includedColumnsBefore = update.getIncludedColumnsBeforeUpdate();
+        RecordsForTable recordMaker = recordMakers.forTable(tableNumber, includedColumns, super::enqueueRecord);
+        List<Entry<Serializable[], Serializable[]>> rows = update.getRows();
+        logger.error("includedColumns="+includedColumns+",includedColumnsBefore="+includedColumnsBefore);
+
+        Long ts = context.getClock().currentTimeInMillis();
+        int count = 0;
+        int numRows = rows.size();
+        if (startingRowNumber < numRows) {
+            for (int row = startingRowNumber; row != numRows; ++row) {
+                logger.error("numRows="+numRows+",startingRowNumber="+startingRowNumber+",row="+row);
+
+                Map.Entry<Serializable[], Serializable[]> changes = rows.get(row);
+                Serializable[] before = changes.getKey();
+                Serializable[] after = changes.getValue();
+                logger.error("before.length="+before.length+",after.length="+after.length);
+                Serializable[] adjustedBefore = adjustBefore(before,after,includedColumnsBefore);
+                for(Object o:adjustedBefore){
+                    logger.error("printTest.adjustedBefore="+o);
+                }
+                for (Object b1:before){
+                    logger.error("before="+b1);
+                }
+                for (Object a1:after){
+                    logger.error("after="+a1);
+                }
+            }
+        }
+
     }
     private Serializable[] adjustBefore(Serializable[] before,Serializable[] after,BitSet includedColumnsBefore){
         if(before.length != after.length){
