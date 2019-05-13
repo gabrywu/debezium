@@ -163,11 +163,6 @@ public final class SourceInfo extends AbstractSourceInfo {
         return SOURCE_SCHEMA;
     }
 
-    @Override
-    protected String connector() {
-        return Module.name();
-    }
-
     /**
      * Get the Kafka Connect detail about the source "partition" for the given database in the replica set. If the database is
      * not known, this method records the new partition.

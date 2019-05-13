@@ -11,7 +11,6 @@ import org.fest.assertions.StringAssert;
 import org.junit.Before;
 import org.junit.Test;
 
-import io.debezium.doc.FixFor;
 import io.debezium.schema.TopicSelector;
 
 /**
@@ -31,15 +30,8 @@ public class TopicSelectorTest {
 
     @Test
     public void shouldHandleCollectionIdWithDatabaseAndCollection() {
-        assertTopic(noPrefix, dbAndCollection("db", "coll")).isEqualTo("db.coll");
-        assertTopic(withPrefix, dbAndCollection("db", "coll")).isEqualTo("prefix.db.coll");
-    }
-
-    @Test
-    @FixFor("DBZ-878")
-    public void shouldHandleCollectionIdWithInvalidTopicNameChar() {
-        assertTopic(noPrefix, dbAndCollection("db", "my@collection")).isEqualTo("db.my_collection");
-        assertTopic(withPrefix, dbAndCollection("db", "my@collection")).isEqualTo("prefix.db.my_collection");
+        assertTopic(noPrefix,dbAndCollection("db", "coll")).isEqualTo("db.coll");
+        assertTopic(withPrefix,dbAndCollection("db", "coll")).isEqualTo("prefix.db.coll");
     }
 
     protected StringAssert assertTopic(TopicSelector<CollectionId> selector, CollectionId collectionId) {

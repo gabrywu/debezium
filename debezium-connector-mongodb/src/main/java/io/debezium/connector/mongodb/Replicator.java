@@ -77,7 +77,7 @@ import io.debezium.util.Threads;
  * This replicator does each of its tasks using a connection to the primary. If the replicator is not able to establish a
  * connection to the primary (e.g., there is no primary, or the replicator cannot communicate with the primary), the replicator
  * will continue to try to establish a connection, using an exponential back-off strategy to prevent saturating the system.
- * After a {@link ConnectionContext#maxConnectionAttemptsForPrimary() configurable} number of failed attempts, the replicator
+ * After a {@link MongoDbTaskContext#maxConnectionAttemptsForPrimary() configurable} number of failed attempts, the replicator
  * will fail by throwing a {@link ConnectException}.
  *
  * @author Randall Hauch
@@ -100,7 +100,6 @@ public class Replicator {
     private final Clock clock;
     private ConnectionContext.MongoPrimary primaryClient;
     private final Consumer<Throwable> onFailure;
-
     /**
      * @param context the replication context; may not be null
      * @param replicaSet the replica set to be replicated; may not be null
@@ -118,7 +117,7 @@ public class Replicator {
         final String copyThreadName = "copy-" + (replicaSet.hasReplicaSetName() ? replicaSet.replicaSetName() : "main");
         this.copyThreads = Threads.newFixedThreadPool(MongoDbConnector.class, context.serverName(), copyThreadName, context.getConnectionContext().maxNumberOfCopyThreads());
         this.bufferedRecorder = new BufferableRecorder(recorder);
-        this.recordMakers = new RecordMakers(context.filters(), this.source, context.topicSelector(), this.bufferedRecorder, context.isEmitTombstoneOnDelete());
+        this.recordMakers = new RecordMakers(this.source, context.topicSelector(), this.bufferedRecorder, context.isEmitTombstoneOnDelete());
         this.clock = this.context.getClock();
         this.onFailure = onFailure;
     }
@@ -142,9 +141,10 @@ public class Replicator {
                 if (establishConnectionToPrimary()) {
                     if (isInitialSyncExpected()) {
                         recordCurrentOplogPosition();
-                        if (!performInitialSync()) {
-                            return;
-                        }
+                        logger.warn("Never Perform Initial Sync");
+//                        if (!performInitialSync()) {
+//                            return;
+//                        }
                     }
                     readOplog();
                 }
@@ -198,7 +198,7 @@ public class Replicator {
 
     /**
      * Determine if an initial sync should be performed. An initial sync is expected if the {@link #source} has no previously
-     * recorded offsets for this replica set, or if {@link ConnectionContext#performSnapshotEvenIfNotNeeded() a snapshot should
+     * recorded offsets for this replica set, or if {@link MongoDbTaskContext#performSnapshotEvenIfNotNeeded() a snapshot should
      * always be performed}.
      *
      * @return {@code true} if the initial sync should be performed, or {@code false} otherwise
@@ -402,8 +402,15 @@ public class Replicator {
 
         // Include none of the cluster-internal operations and only those events since the previous timestamp ...
         MongoCollection<Document> oplog = primary.getDatabase("local").getCollection("oplog.rs");
-        Bson filter = Filters.and(Filters.gt("ts", oplogStart), // start just after our last position
-                                  Filters.exists("fromMigrate", false)); // skip internal movements across shards
+
+        Bson filter = !context.getOplogFileter().equals("") ? Filters.and(
+                Filters.gt("ts", oplogStart),// start just after our last position
+                Filters.exists("fromMigrate", false),// skip internal movements across shards
+                Filters.or(Filters.exists("ns",false),
+                        Filters.eq("ns",""),
+                        Filters.regex("ns",context.getOplogFileter())))
+                :Filters.and(Filters.gt("ts", oplogStart),Filters.exists("fromMigrate", false));
+
         FindIterable<Document> results = oplog.find(filter)
                                               .sort(new Document("$natural", 1)) // force forwards collection scan
                                               .oplogReplay(true) // tells Mongo to not rely on indexes
@@ -411,10 +418,11 @@ public class Replicator {
         // Read as much of the oplog as we can ...
         ServerAddress primaryAddress = primary.getAddress();
         try (MongoCursor<Document> cursor = results.iterator()) {
+            logger.warn("Oplog Cursor Reading from Address: {} (by cursor.getServerAddress)",cursor.getServerAddress());
             while (running.get() && cursor.hasNext()) {
                 if (!handleOplogEvent(primaryAddress, cursor.next())) {
                     // Something happened, and we're supposed to stop reading
-                    return;
+                    break;
                 }
             }
         }
@@ -440,26 +448,37 @@ public class Replicator {
             // These are replica set events ...
             String msg = object.getString("msg");
             if ("new primary".equals(msg)) {
+                logger.info("Found new primary message");
                 AtomicReference<ServerAddress> address = new AtomicReference<>();
+                ServerAddress serverAddress = address.get();
                 try {
-                    primaryClient.executeBlocking("conn", mongoClient -> {
-                        ServerAddress currentPrimary = mongoClient.getAddress();
-                        address.set(currentPrimary);
-                    });
+                    while (serverAddress==null){
+                        primaryClient.executeBlocking("conn", mongoClient -> {
+                            ServerAddress currentPrimary = mongoClient.getAddress();
+                            address.set(currentPrimary);
+                        });
+                        serverAddress = address.get();
+                        if(serverAddress==null){
+                            logger.info("Primary switching, bug non master upped,sleep 1 second");
+                            Thread.sleep(1*1000);
+                        }
+                    }
                 } catch (InterruptedException e) {
                     logger.error("Get current primary executeBlocking", e);
                 }
-                ServerAddress serverAddress = address.get();
-
-                if (serverAddress != null && !serverAddress.equals(primaryAddress)) {
-                    logger.info("Found new primary event in oplog, so stopping use of {} to continue with new primary",
-                            primaryAddress);
-                    // There is a new primary, so stop using this server and instead use the new primary ...
-                    return false;
-                } else {
-                    logger.info("Found new primary event in oplog, current {} is new primary. " +
-                                "Continue to process oplog event.", primaryAddress);
+                logger.info("Found new primary {}",serverAddress);
+                if(!serverAddress.equals(primaryAddress)){
+                    throw new ConnectException("Found new primary,restart replicator");
                 }
+//                if (serverAddress != null && !serverAddress.equals(primaryAddress)) {
+//                    logger.info("Found new primary event in oplog, so stopping use of {} to continue with new primary",
+//                            primaryAddress);
+//                    // There is a new primary, so stop using this server and instead use the new primary ...
+//                    return true;
+//                } else {
+//                    logger.info("Found new primary event in oplog, current {} is new primary. " +
+//                                "Continue to process oplog event.", primaryAddress);
+//                }
             }
             // Otherwise, ignore this event ...
             logger.debug("Skipping event with no namespace: {}", event.toJson());
@@ -478,7 +497,7 @@ public class Replicator {
             }
             // Otherwise, it is an event on a document in a collection ...
             if (!context.filters().databaseFilter().test(dbName)){
-                logger.debug("Skipping the event for database {} based on database.whitelist");
+                logger.debug("Skipping the event for database {} based on database.whitelist",dbName);
                 return true;
             }
             CollectionId collectionId = new CollectionId(rsName, dbName, collectionName);

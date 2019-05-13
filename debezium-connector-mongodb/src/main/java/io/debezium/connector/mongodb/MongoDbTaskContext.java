@@ -23,7 +23,7 @@ public class MongoDbTaskContext extends CdcSourceTaskContext {
     private final boolean emitTombstoneOnDelete;
     private final String serverName;
     private final ConnectionContext connectionContext;
-
+    private final String oplogFileterReg;
     /**
      * @param config the configuration
      */
@@ -37,8 +37,11 @@ public class MongoDbTaskContext extends CdcSourceTaskContext {
         this.emitTombstoneOnDelete = config.getBoolean(CommonConnectorConfig.TOMBSTONES_ON_DELETE);
         this.serverName = config.getString(MongoDbConnectorConfig.LOGICAL_NAME);
         this.connectionContext = new ConnectionContext(config);
+        this.oplogFileterReg = config.getString("mongodb.ns.filter","");
     }
-
+    public String getOplogFileter(){
+        return oplogFileterReg;
+    }
     public TopicSelector<CollectionId> topicSelector() {
         return topicSelector;
     }

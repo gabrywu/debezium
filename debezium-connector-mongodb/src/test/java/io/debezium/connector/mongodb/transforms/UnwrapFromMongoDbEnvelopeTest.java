@@ -26,8 +26,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 import io.debezium.connector.mongodb.CollectionId;
-import io.debezium.connector.mongodb.Configurator;
-import io.debezium.connector.mongodb.Filters;
 import io.debezium.connector.mongodb.MongoDbTopicSelector;
 import io.debezium.connector.mongodb.RecordMakers;
 import io.debezium.connector.mongodb.RecordMakers.RecordsForCollection;
@@ -49,7 +47,6 @@ public class UnwrapFromMongoDbEnvelopeTest {
     private static final String FLATTEN_STRUCT = "flatten.struct";
     private static final String DELIMITER = "flatten.struct.delimiter";
 
-    private Filters filters;
     private SourceInfo source;
     private RecordMakers recordMakers;
     private TopicSelector<CollectionId> topicSelector;
@@ -59,11 +56,10 @@ public class UnwrapFromMongoDbEnvelopeTest {
 
     @Before
     public void setup() {
-        filters = new Configurator().createFilters();
         source = new SourceInfo(SERVER_NAME);
         topicSelector = MongoDbTopicSelector.defaultSelector(SERVER_NAME, "__debezium-heartbeat");
         produced = new ArrayList<>();
-        recordMakers = new RecordMakers(filters, source, topicSelector, produced::add, true);
+        recordMakers = new RecordMakers(source, topicSelector, produced::add, true);
 
         transformation = new UnwrapFromMongoDbEnvelope<SourceRecord>();
         transformation.configure(Collections.singletonMap("array.encoding", "array"));
@@ -122,6 +118,8 @@ public class UnwrapFromMongoDbEnvelopeTest {
         assertThat(value.schema().field("active").schema()).isEqualTo(SchemaBuilder.OPTIONAL_BOOLEAN_SCHEMA);
         assertThat(value.schema().field("scores").schema()).isEqualTo(SchemaBuilder.array(SchemaBuilder.OPTIONAL_FLOAT64_SCHEMA).optional().build());
         assertThat(value.schema().fields()).hasSize(5);
+
+        transformation.close();
     }
 
     @Test
@@ -165,6 +163,8 @@ public class UnwrapFromMongoDbEnvelopeTest {
         assertThat(value.schema().field("id").schema().field("dept").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().field("name").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().fields()).hasSize(2);
+
+        transformation.close();
     }
     @Test
     public void shouldGenerateRecordForUpdateEvent() throws InterruptedException {
@@ -206,10 +206,11 @@ public class UnwrapFromMongoDbEnvelopeTest {
         assertThat(value.schema().fields()).hasSize(2);
     }
 
+
     @Test
     @FixFor("DBZ-582")
     public void shouldGenerateRecordForDeleteEventWithoutTombstone() throws InterruptedException {
-        RecordMakers recordMakers = new RecordMakers(filters, source, topicSelector, produced::add, false);
+        RecordMakers recordMakers = new RecordMakers(source, topicSelector, produced::add, false);
 
         BsonTimestamp ts = new BsonTimestamp(1000, 1);
         CollectionId collectionId = new CollectionId("rs0", "dbA", "c1");
@@ -327,6 +328,8 @@ public class UnwrapFromMongoDbEnvelopeTest {
                     .build()
         );
         assertThat(value.schema().fields()).hasSize(3);
+
+        transformation.close();
     }
 
     @Test
@@ -378,6 +381,8 @@ public class UnwrapFromMongoDbEnvelopeTest {
         assertThat(value.schema().field("address_street").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().field("address_zipcode").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().fields()).hasSize(4);
+
+        transformation.close();
     }
 
     @Test
@@ -430,6 +435,8 @@ public class UnwrapFromMongoDbEnvelopeTest {
         assertThat(value.schema().field("address-street").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().field("address-zipcode").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().fields()).hasSize(4);
+
+        transformation.close();
     }
 
     @Test
@@ -478,5 +485,7 @@ public class UnwrapFromMongoDbEnvelopeTest {
         assertThat(value.schema().field("address-name").schema()).isEqualTo(SchemaBuilder.OPTIONAL_STRING_SCHEMA);
         assertThat(value.schema().field("address-city2-part").schema()).isEqualTo(SchemaBuilder.OPTIONAL_INT32_SCHEMA);
         assertThat(value.schema().fields()).hasSize(4);
+
+        transformation.close();
     }
 }

@@ -16,14 +16,10 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import com.mongodb.*;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.mongodb.MongoClient;
-import com.mongodb.MongoCredential;
-import com.mongodb.ReplicaSetStatus;
-import com.mongodb.ServerAddress;
 
 import io.debezium.config.Configuration;
 import io.debezium.function.BlockingConsumer;
@@ -71,6 +67,16 @@ public class ConnectionContext implements AutoCloseable {
         if (useSSL) {
             clientBuilder.options().sslEnabled(true).sslInvalidHostNameAllowed(sslAllowInvalidHostnames);
         }
+
+//        primary：默认值，此时只会从主节点读取数据。主节点不可用时会报错或者抛出异常。包含读操作的多文档事务Multi-document transactions必须使用这个值。
+//        primaryPreferred：大多数情况下从主节点(primary)读取数据，主节点不可用时到从节点(secondary)读取数据。
+//        secondary：只会到从节点(secondary)读取数据。写少读多的场景可以考虑使用这个值。
+//        secondaryPreferred：大多数情况下到从节点读取数据，从节点不可用时到主节点读取数据。写少读多的场景可以考虑使用这个值。
+//        nearest：到网络延迟最低的节点读取数据，不用管该节点是主节点还是从节点。
+
+        final String readReference = config.getString("mongo.read.reference","secondary");
+        clientBuilder.options().readPreference(ReadPreference.valueOf(readReference));
+
         pool = clientBuilder.build();
 
         this.replicaSets = ReplicaSets.parse(hosts());
@@ -418,21 +424,32 @@ public class ConnectionContext implements AutoCloseable {
      */
     protected MongoClient clientForPrimary(ReplicaSet replicaSet) {
         MongoClient replicaSetClient = clientForReplicaSet(replicaSet);
-        ReplicaSetStatus rsStatus = replicaSetClient.getReplicaSetStatus();
-        if (rsStatus == null) {
-            if ( !this.useHostsAsSeeds ) {
-                // No replica set status is available, but it may still be a replica set ...
-                return replicaSetClient;
-            }
-            // This is not a replica set, so there will be no oplog to read ...
-            throw new ConnectException("The MongoDB server(s) at '" + replicaSet +
-                    "' is not a valid replica set and cannot be used");
+        logger().warn("Current ReplicaSetClient readPreference is: {}",replicaSetClient.getMongoClientOptions().getReadPreference().getName());
+        ReplicaSetStatus replicaSetStatus = replicaSetClient.getReplicaSetStatus();
+        for (ServerAddress serverAddress:replicaSetClient.getServerAddressList()){
+             logger().warn("Current ReplicaSetClient address: {},master: {}",
+                     serverAddress,
+                     replicaSetStatus.getMaster()  );
         }
-        // It is a replica set ...
-        ServerAddress primaryAddress = rsStatus.getMaster();
-        if (primaryAddress != null) {
-            return pool.clientFor(primaryAddress);
-        }
-        return null;
+
+        return replicaSetClient;
+//        ReplicaSetStatus rsStatus = replicaSetClient.getReplicaSetStatus();
+//        if (rsStatus == null) {
+//            if ( !this.useHostsAsSeeds ) {
+//                // No replica set status is available, but it may still be a replica set ...
+//                return replicaSetClient;
+//            }
+//            // This is not a replica set, so there will be no oplog to read ...
+//            throw new ConnectException("The MongoDB server(s) at '" + replicaSet +
+//                    "' is not a valid replica set and cannot be used");
+//        }
+//        // It is a replica set ...
+//        ServerAddress primaryAddress = rsStatus.getMaster();
+//        if (primaryAddress != null) {
+//            MongoClient primary = pool.clientFor(primaryAddress);
+//            logger().warn("Primary address is: {},readPreference: {}",primaryAddress,primary.getMongoClientOptions().getReadPreference().getName());
+//            return primary;
+//        }
+//        return null;
     }
 }
